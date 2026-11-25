@@ -7,7 +7,9 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import com.google.common.collect.ArrayListMultimap;
@@ -28,6 +30,7 @@ import fi.dy.masa.malilib.hotkeys.*;
 import fi.dy.masa.malilib.input.gamepad.GamepadManager;
 import fi.dy.masa.malilib.input.gamepad.GamepadButtonEvent;
 import fi.dy.masa.malilib.util.FileNameUtils;
+import fi.dy.masa.malilib.util.GuiUtils;
 import fi.dy.masa.malilib.util.InfoUtils;
 import fi.dy.masa.malilib.util.input.*;
 import fi.dy.masa.malilib.util.position.Vec2d;
@@ -41,6 +44,7 @@ public class InputEventHandler implements IKeybindManager, IInputManager
     private final List<IKeybindProvider> keybindProviders = new ArrayList<>();
     private final List<IKeyboardInputHandler> keyboardHandlers = new ArrayList<>();
     private final List<IMouseInputHandler> mouseHandlers = new ArrayList<>();
+    private final Set<IKeybind> pendingReleaseKeybinds = new HashSet<>();
     private double mouseWheelDeltaSum;
     private KeyState lastKeyState;
     private int lastAction;
@@ -86,6 +90,7 @@ public class InputEventHandler implements IKeybindManager, IInputManager
     public void updateUsedKeys()
     {
         this.hotkeyMap.clear();
+        this.pendingReleaseKeybinds.clear();
 
         for (IKeybindProvider handler : this.keybindProviders)
         {
@@ -282,7 +287,46 @@ public class InputEventHandler implements IKeybindManager, IInputManager
 //        KeybindMulti.onKeyInputPre(input, action);
 
         boolean eventKeyState = action != ActionCodes.RELEASED;
-        boolean cancel = this.checkKeyBindsForChanges(input.key());
+        int scanCode = input.key();
+
+        if (scanCode == ScanCodes.SCAN_ESCAPE)
+        {
+            this.pendingReleaseKeybinds.clear();
+        }
+
+        boolean cancel;
+
+        if (eventKeyState)
+        {
+            cancel = this.checkKeyBindsForChanges(scanCode);
+        }
+        else
+        {
+            cancel = this.checkKeyBindsForChanges(scanCode);
+
+            // Trigger any pending prefix keybinds that were waiting for release
+            // (e.g. M pressed alone for menu, without pressing the second key of M+T)
+            List<IKeybind> toTrigger = new ArrayList<>();
+            for (IKeybind keybind : this.pendingReleaseKeybinds)
+            {
+                if (keybind.getKeys().contains(scanCode))
+                {
+                    toTrigger.add(keybind);
+                }
+            }
+
+            for (IKeybind keybind : toTrigger)
+            {
+                this.pendingReleaseKeybinds.remove(keybind);
+
+                if (this.isKeybindContextValid(keybind))
+                {
+                    KeyAction actionToTrigger = keybind.getSettings().getActivateOn() == KeyAction.RELEASE ? KeyAction.RELEASE : KeyAction.PRESS;
+                    keybind.triggerAction(actionToTrigger);
+                    cancel |= keybind.getSettings().shouldCancel();
+                }
+            }
+        }
 
         if (this.keyboardHandlers.isEmpty() == false)
         {
@@ -515,6 +559,18 @@ public class InputEventHandler implements IKeybindManager, IInputManager
         return false;
     }
 
+    public boolean isKeybindContextValid(IKeybind keybind)
+    {
+        KeybindSettings.Context context = keybind.getSettings().getContext();
+        if (context == KeybindSettings.Context.ANY)
+        {
+            return true;
+        }
+
+        boolean inGame = GuiUtils.getCurrentScreen() == null;
+        return (context == KeybindSettings.Context.INGAME) == inGame;
+    }
+
     private boolean checkKeyBindsForChanges(int eventKey)
     {
         boolean cancel = false;
@@ -522,13 +578,142 @@ public class InputEventHandler implements IKeybindManager, IInputManager
 
         if (keybinds.isEmpty() == false)
         {
-            for (IKeybind keybind : keybinds)
+            // Sort keybinds longer first so chords (e.g. M+T) have higher priority than single-key subsets (e.g. M)
+            List<IKeybind> list = new ArrayList<>(keybinds);
+            list.sort((a, b) -> Integer.compare(b.getKeys().size(), a.getKeys().size()));
+
+            KeybindMulti.resetTriggeredCount();
+            List<IKeybind> triggeredKeybinds = new ArrayList<>();
+
+            for (IKeybind keybind : list)
             {
+                if (!this.isKeybindContextValid(keybind))
+                {
+                    // Still update unpressed state if needed without triggering or deferring
+                    keybind.updateIsPressed(false);
+                    continue;
+                }
+
+                // If a longer chord triggered in this same turn, silently unpress any subset keybinds
+                // so they don't fire alongside the chord.
+                boolean isSubsetOfTriggered = false;
+                for (IKeybind triggered : triggeredKeybinds)
+                {
+                    if (triggered.getKeys().size() > keybind.getKeys().size() &&
+                        triggered.getKeys().containsAll(keybind.getKeys()))
+                    {
+                        isSubsetOfTriggered = true;
+                        break;
+                    }
+                }
+
+                if (isSubsetOfTriggered)
+                {
+                    keybind.unpress();
+                    continue;
+                }
+
+                // If this is a regular keyboard key that serves as a prefix for a longer registered chord (e.g. 'M' in 'M+T'),
+                // defer triggering until the key is released so the user has time to type the full combination.
+                if (eventKey >= 0 &&
+                    !ScanCodes.isModifierKey(eventKey) &&
+                    !InputUtils.isVanillaKeyBound(eventKey) &&
+                    KeybindMulti.isPressedKey(eventKey) &&
+                    this.hasPrefixKeybinds(keybind))
+                {
+                    this.pendingReleaseKeybinds.add(keybind);
+                    cancel |= keybind.getSettings().shouldCancel();
+                    continue;
+                }
+
                 // Note: isPressed() has to get called for key releases too, to reset the state
-                cancel |= keybind.updateIsPressed();
+                boolean wasCancel = keybind.updateIsPressed();
+                cancel |= wasCancel;
+
+                if (keybind.isKeybindHeld())
+                {
+                    triggeredKeybinds.add(keybind);
+
+                    // If a multi-key chord triggered (e.g. M+T), silently unpress any subset keybinds (e.g. M),
+                    // and remove any pending release triggers for subset keybinds
+                    if (keybind.getKeys().size() > 1)
+                    {
+                        for (int k : keybind.getKeys())
+                        {
+                            for (IKeybind subset : this.hotkeyMap.get(k))
+                            {
+                                if (subset != keybind &&
+                                    subset.getKeys().size() < keybind.getKeys().size() &&
+                                    keybind.getKeys().containsAll(subset.getKeys()))
+                                {
+                                    subset.unpress();
+                                    this.pendingReleaseKeybinds.remove(subset);
+                                }
+                            }
+                        }
+
+                        this.pendingReleaseKeybinds.removeIf(pending ->
+                            pending.getKeys().size() < keybind.getKeys().size() &&
+                            keybind.getKeys().containsAll(pending.getKeys())
+                        );
+                    }
+                }
             }
         }
 
         return cancel;
     }
+
+    /**
+     * Checks if this keybind is a strict prefix of a longer registered keybind in the same context.
+     * Only non-modifier keys that are not bound to vanilla controls participate in prefix chords.
+     */
+    public boolean hasPrefixKeybinds(IKeybind keybind)
+    {
+        List<Integer> keys = keybind.getKeys();
+        if (keys.isEmpty())
+        {
+            return false;
+        }
+
+        // Only keyboard non-modifier keys that are not bound to vanilla actions participate in prefix chords
+        for (int k : keys)
+        {
+            if (k < 0 || ScanCodes.isModifierKey(k) || InputUtils.isVanillaKeyBound(k))
+            {
+                return false;
+            }
+        }
+
+        if (!this.isKeybindContextValid(keybind))
+        {
+            return false;
+        }
+
+        int firstKey = keys.getFirst();
+        Collection<IKeybind> candidates = this.hotkeyMap.get(firstKey);
+
+        for (IKeybind other : candidates)
+        {
+            if (other != keybind && other.getKeys().size() > keys.size() && this.isKeybindContextValid(other))
+            {
+                List<Integer> otherKeys = other.getKeys();
+                if (other.getSettings().isOrderSensitive())
+                {
+                    if (otherKeys.size() >= keys.size() && otherKeys.subList(0, keys.size()).equals(keys))
+                    {
+                        return true;
+                    }
+                }
+                else if (otherKeys.containsAll(keys))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+
 }

@@ -11,6 +11,7 @@ import com.mojang.blaze3d.platform.Window;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 
+import fi.dy.masa.malilib.hotkeys.KeybindMulti;
 import fi.dy.masa.malilib.mixin.input.IMixinKeyBinding;
 
 public class InputUtils
@@ -83,6 +84,27 @@ public class InputUtils
 	{
 		key.setKey(((IMixinKeyBinding) key).malilib$getDefaultKey());
 		KeyMapping.resetMapping();
+	}
+
+	/**
+	 * Checks if a key is currently bound to any vanilla game action (e.g. W for walking).
+	 * Used to prevent chords from intercepting vanilla movement when typed as prefixes.
+	 */
+	public static boolean isVanillaKeyBound(int scanCode)
+	{
+		Minecraft mc = Minecraft.getInstance();
+		if (mc != null && mc.options != null && mc.options.keyMappings != null)
+		{
+			for (KeyMapping mapping : mc.options.keyMappings)
+			{
+				if (KeybindMulti.getKeyCode(mapping) == scanCode)
+				{
+					return true;
+				}
+			}
+		}
+
+		return false;
 	}
 
 	public static boolean isKeyHeld(final int scanCode)

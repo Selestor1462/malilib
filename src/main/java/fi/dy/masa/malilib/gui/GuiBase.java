@@ -158,6 +158,51 @@ public abstract class GuiBase extends Screen implements IMessageConsumer, IStrin
 
         this.initGui();
         this.openTime = System.nanoTime();
+        this.ensureTextInputStarted();
+    }
+
+    @Override
+    public void removed()
+    {
+        super.removed();
+
+        if (this.mc != null && this.mc.textInputManager() != null)
+        {
+            this.mc.textInputManager().stopTextInput(this);
+        }
+    }
+
+    /**
+     * Ensures SDL text input events are actively captured by Minecraft's window.
+     * Required in SDL3 so screens can receive CharacterEvents when typing without first focusing an EditBox.
+     */
+    public void ensureTextInputStarted()
+    {
+        if (this.mc != null && this.mc.textInputManager() != null)
+        {
+            this.mc.textInputManager().startTextInput(this);
+        }
+    }
+
+    public boolean hasFocusedTextField()
+    {
+        for (TextFieldWrapper<?> entry : this.textFields)
+        {
+            if (entry.isFocused())
+            {
+                return true;
+            }
+        }
+
+        for (TextFieldMultiLineWrapper<? extends GuiTextFieldMultiLine> entry : this.textFieldsMultiLine)
+        {
+            if (entry.isFocused())
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public void initGui()
@@ -260,7 +305,14 @@ public abstract class GuiBase extends Screen implements IMessageConsumer, IStrin
     @Override
     public boolean mouseClicked(@NotNull MouseButtonEvent click, boolean doubleClick)
     {
-        if (this.onMouseClicked(click, doubleClick) == false)
+        boolean handled = this.onMouseClicked(click, doubleClick);
+
+        if (!this.hasFocusedTextField())
+        {
+            this.ensureTextInputStarted();
+        }
+
+        if (handled == false)
         {
             return super.mouseClicked(click, doubleClick);
         }

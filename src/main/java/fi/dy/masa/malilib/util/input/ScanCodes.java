@@ -387,6 +387,18 @@ public class ScanCodes
 		return scanCode >= -OFFSET_GAMEPAD_AXIS && scanCode < -OFFSET_GAMEPAD;
 	}
 
+	/**
+	 * Checks if the given scancode is a modifier key (Shift, Ctrl, Alt, or Super/GUI).
+	 * Used by the chord system to ensure modifiers are never deferred as prefix keys.
+	 */
+	public static boolean isModifierKey(int scanCode)
+	{
+		return scanCode == SCAN_LEFT_CONTROL || scanCode == SCAN_RIGHT_CONTROL ||
+		       scanCode == SCAN_LEFT_SHIFT   || scanCode == SCAN_RIGHT_SHIFT   ||
+		       scanCode == SCAN_LEFT_ALT     || scanCode == SCAN_RIGHT_ALT     ||
+		       scanCode == SCAN_LEFT_GUI     || scanCode == SCAN_RIGHT_GUI;
+	}
+
 	@Nullable
 	public static String getNameForScanCode(final int scanCode)
 	{

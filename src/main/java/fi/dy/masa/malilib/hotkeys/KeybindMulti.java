@@ -122,12 +122,27 @@ public class KeybindMulti implements IKeybind
     @Override
     public boolean isKeybindHeld()
     {
-        return this.pressed || (this.settings.getAllowEmpty() && this.scanCodes.isEmpty());
+        if (this.settings.getAllowEmpty() && this.scanCodes.isEmpty())
+        {
+            return true;
+        }
+
+        // Dynamically refresh the pressed state against current screen context without triggering callbacks.
+        // This ensures callers (e.g. ItemScroller modifiers or render overlays) see fresh state during GUI transitions.
+        this.updateIsPressed(false);
+        return this.pressed;
     }
 
     @ApiStatus.Internal
     @Override
     public boolean updateIsPressed()
+    {
+        return this.updateIsPressed(true);
+    }
+
+    @ApiStatus.Internal
+    @Override
+    public boolean updateIsPressed(boolean triggerCallback)
     {
         if (this.scanCodes.isEmpty() ||
             (this.settings.getContext() != KeybindSettings.Context.ANY &&
@@ -137,44 +152,46 @@ public class KeybindMulti implements IKeybind
             return false;
         }
 
-        boolean allowExtraKeys = this.settings.getAllowExtraKeys();
-        boolean allowOutOfOrder = this.settings.isOrderSensitive() == false;
         boolean pressedLast = this.pressed;
         final int sizePressed = PRESSED_KEYS.size();
         final int sizeRequired = this.scanCodes.size();
 
-        if (sizePressed >= sizeRequired && (allowExtraKeys || sizePressed == sizeRequired))
+        // All required keys must be pressed. Extra keys held alongside them are allowed.
+        if (sizePressed >= sizeRequired && PRESSED_KEYS.containsAll(this.scanCodes))
         {
-            int scanCodeIndex = 0;
-            this.pressed = PRESSED_KEYS.containsAll(this.scanCodes);
+            this.pressed = true;
+            boolean orderOk = true;
 
-            for (int i = 0; i < sizePressed; ++i)
+            // When order sensitive, verify keys were pressed in sequence (A before C for A+C).
+            // Extra held keys before/between/after will not invalidate the relative order.
+            if (this.settings.isOrderSensitive() && sizeRequired > 1)
             {
-                Integer scanCodeObj = PRESSED_KEYS.get(i);
+                int prevIndex = -1;
 
-                if (this.scanCodes.get(scanCodeIndex).equals(scanCodeObj))
+                for (int k = 0; k < sizeRequired; ++k)
                 {
-                    // Fully matched keybind
-                    if (++scanCodeIndex >= sizeRequired)
+                    int currIndex = PRESSED_KEYS.indexOf(this.scanCodes.get(k));
+
+                    if (currIndex == -1 || currIndex < prevIndex)
                     {
+                        orderOk = false;
                         break;
                     }
-                }
-                else if ((allowOutOfOrder == false && (scanCodeIndex > 0 || sizePressed == sizeRequired)) ||
-                         (this.scanCodes.contains(scanCodeObj) == false && allowExtraKeys == false))
-                {
-                    /*
-                    System.out.printf("km fail: key: %s, ae: %s, aoo: %s, cont: %s, keys: %s, pressed: %s, triggeredCount: %d\n",
-                            scanCodeObj, allowExtraKeys, allowOutOfOrder, this.keyCodes.contains(scanCodeObj), this.keyCodes, pressedKeys, triggeredCount);
-                    */
-                    this.pressed = false;
-                    break;
+
+                    prevIndex = currIndex;
                 }
             }
+
+            this.pressed = orderOk;
         }
         else
         {
             this.pressed = false;
+        }
+
+        if (!triggerCallback)
+        {
+            return false;
         }
 
         KeyAction activateOn = this.settings.getActivateOn();
@@ -195,6 +212,14 @@ public class KeybindMulti implements IKeybind
         }
 
         return false;
+    }
+
+    @Override
+    public void unpress()
+    {
+        this.pressed = false;
+        this.pressedLast = false;
+        this.heldTime = 0;
     }
 
     private boolean triggerKeyAction(boolean pressedLast)
@@ -520,7 +545,7 @@ public class KeybindMulti implements IKeybind
         else if (ScanCodes.isMouse(scanCode))
         {
             scanCode += ScanCodes.OFFSET_MOUSE;
-            return InputUtils.isMouseHeld(scanCode) || InputConstants.isKeyDown(scanCode);
+            return InputUtils.isMouseHeld(scanCode);
         }
 
 //        final KeyState state = ((InputEventHandler) InputEventHandler.getInputManager()).getLastKeyState();
@@ -657,7 +682,25 @@ public class KeybindMulti implements IKeybind
         return triggeredCount;
     }
 
+    public static void resetTriggeredCount()
+    {
+        triggeredCount = 0;
+    }
+
     public @Nullable IHotkeyCallback getCallback() {
         return callback;
+    }
+
+    @Override
+    public boolean triggerAction(KeyAction action)
+    {
+        if (this.callback != null)
+        {
+            this.pressed = true;
+            boolean ret = this.callback.onKeyAction(action, this);
+            this.pressed = false;
+            return ret;
+        }
+        return false;
     }
 }

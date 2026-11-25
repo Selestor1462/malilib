@@ -4,10 +4,12 @@ import net.minecraft.client.input.CharacterEvent;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.input.MouseButtonEvent;
 
+import fi.dy.masa.malilib.gui.GuiBase;
 import fi.dy.masa.malilib.gui.GuiTextFieldGeneric;
 import fi.dy.masa.malilib.gui.LeftRight;
 import fi.dy.masa.malilib.gui.interfaces.IGuiIcon;
 import fi.dy.masa.malilib.render.GuiContext;
+import fi.dy.masa.malilib.util.GuiUtils;
 import fi.dy.masa.malilib.util.input.ScanCodes;
 
 public class WidgetSearchBar extends WidgetBase
@@ -55,6 +57,15 @@ public class WidgetSearchBar extends WidgetBase
         {
             this.searchBox.setFocused(true);
         }
+        else
+        {
+            this.searchBox.setFocused(false);
+
+            if (GuiUtils.getCurrentScreen() instanceof GuiBase gui)
+            {
+                gui.ensureTextInputStarted();
+            }
+        }
     }
 
     @Override
@@ -90,8 +101,7 @@ public class WidgetSearchBar extends WidgetBase
                     this.mc.gui.screen().onClose();
                 }
 
-                this.searchOpen = false;
-                this.searchBox.setFocused(false);
+                this.setSearchOpen(false);
                 return true;
             }
         }
@@ -108,8 +118,7 @@ public class WidgetSearchBar extends WidgetBase
         }
         else if (input.isAllowedChatCharacter())
         {
-            this.searchOpen = true;
-            this.searchBox.setFocused(true);
+            this.setSearchOpen(true);
             this.searchBox.setValue("");
             this.searchBox.charTyped(input);
 

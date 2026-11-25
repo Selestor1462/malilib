@@ -49,6 +49,22 @@ public interface IKeybind extends IConfigResettable, IStringRepresentable
      */
     boolean updateIsPressed();
 
+    /**
+     * Updates the pressed state of this keybind without triggering callbacks if triggerCallback is false.
+     */
+    default boolean updateIsPressed(boolean triggerCallback)
+    {
+        return updateIsPressed();
+    }
+
+    /**
+     * Silently resets this keybind's active state.
+     * Used when a longer chord containing this keybind as a subset triggers.
+     */
+    default void unpress()
+    {
+    }
+
     KeybindSettings getSettings();
 
     /**
@@ -80,6 +96,23 @@ public interface IKeybind extends IConfigResettable, IStringRepresentable
     List<Integer> getKeys();
 
     void setCallback(@Nullable IHotkeyCallback callback);
+
+    @Nullable
+    IHotkeyCallback getCallback();
+
+    /**
+     * Directly triggers this keybind's callback with the specified action.
+     * Used when executing deferred release hotkeys.
+     */
+    default boolean triggerAction(KeyAction action)
+    {
+        IHotkeyCallback callback = this.getCallback();
+        if (callback != null)
+        {
+            return callback.onKeyAction(action, this);
+        }
+        return false;
+    }
 
     boolean areSettingsModified();
 
